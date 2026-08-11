@@ -1,0 +1,24 @@
+services:
+  excalidash-mcp:
+    build:
+      context: .
+    image: excalidash-mcp:local
+    container_name: excalidash-mcp
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MCP_PORT:-9003}:8080"
+    env_file:
+      - ${ENV_FILE:-.env}
+    environment:
+      MCP_HTTP_HOST: 0.0.0.0
+      MCP_HTTP_PORT: "8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
