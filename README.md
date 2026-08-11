@@ -25,12 +25,46 @@ MCP 클라이언트
 
 ## 요구 사항
 
-- ExcaliDash v0.6.0-dev 또는 Drawing Agent API가 포함된 이후 버전
+- ExcaliDash **v0.6.0-dev 이상** (Drawing Agent API 포함)
 - Excalidraw 엔진으로 만든 드로잉
 - Node.js 20 이상 또는 Docker Compose
 - `Read drawings`, `Write drawings` 스코프를 가진 ExcaliDash 계정 API 키
+- ExcaliDash Settings에서 활성화된 AI 기능
 
-ExcaliDash 관리자가 AI 기능을 꺼 두면 `summary`, `elements`, `ops` 요청이 거부됩니다. Settings에서 AI 기능이 켜져 있는지 확인하십시오.
+### ExcaliDash 버전 확인
+
+Drawing Agent API(`ops`, `summary`, `elements`)는 v0.6.0-dev에서 추가되었습니다. v0.5.x에는 해당 엔드포인트가 없어 이 MCP 서버가 동작하지 않습니다.
+
+2026년 8월 기준 안정판은 v0.5.1이고 0.6.0 정식 릴리스는 아직 없습니다. **`:latest` 이미지로 배포했다면 v0.5.x이므로 프리릴리스 태그로 올려야 합니다.**
+
+```yaml
+services:
+  backend:
+    image: zimengxiong/excalidash-backend:0.6.0-dev-a6969c9
+  frontend:
+    image: zimengxiong/excalidash-frontend:0.6.0-dev-a6969c9
+```
+
+`0.6.0-dev-a6969c9`는 특정 빌드에 고정된 태그이고, `dev`는 새 프리릴리스마다 내용이 바뀌는 롤링 태그입니다.
+
+업그레이드 전에 백엔드 볼륨(SQLite DB와 secrets)을 백업하십시오. 마이그레이션 후 이미지만 되돌리는 것은 안전한 롤백이 아닙니다.
+
+버전이 맞는지 확인하려면 API 키로 실제 Agent API를 호출해 봅니다.
+
+```bash
+curl -sS -H "Authorization: Bearer $EXCALIDASH_API_KEY" \
+  https://your-excalidash/api/drawings/<drawing-id>/summary
+```
+
+응답 본문으로 원인을 구분합니다. v0.5.x와 AI 비활성화 상태는 둘 다 `403`이라 상태 코드만으로는 구분되지 않습니다.
+
+| 응답 | 의미 |
+|---|---|
+| 드로잉 구조 요약 텍스트 | 정상 동작 |
+| `{"error":"Forbidden","message":"API key is not authorized for this route"}` | v0.5.x. Agent API가 없어 인증 단계에서 차단됨 |
+| `{"error":"AI features disabled",...}` | v0.6이지만 관리자가 AI 기능을 꺼 둠 |
+| `{"error":"Drawing not found"}` | 드로잉 ID가 틀렸거나 소유자가 아님 |
+| `{"error":"Engine mismatch",...}` | tldraw 드로잉. Excalidraw 드로잉으로 시도해야 함 |
 
 ## API 키 발급
 
@@ -328,9 +362,17 @@ docker build -t excalidash-mcp:local .
 
 ## 문제 해결
 
-### `401 Unauthorized` 또는 `403 Forbidden`
+### `403 Forbidden`
 
-API 키 값과 스코프를 확인합니다. Agent API 호출에는 ExcaliDash AI 기능도 켜져 있어야 합니다.
+세 가지 원인이 같은 상태 코드를 씁니다. 응답 본문으로 구분합니다.
+
+- `API key is not authorized for this route` — ExcaliDash가 v0.5.x입니다. [버전 확인](#excalidash-버전-확인)을 참고해 업그레이드합니다.
+- `AI features disabled` — Settings에서 AI 기능을 켭니다.
+- 그 외 — API 키에 `Read drawings`, `Write drawings` 스코프가 있는지 확인합니다.
+
+### `401 Unauthorized`
+
+API 키 값이 잘못되었거나 폐기되었습니다. Settings에서 새 키를 발급합니다.
 
 ### 컨테이너에서 ExcaliDash에 연결할 수 없음
 
