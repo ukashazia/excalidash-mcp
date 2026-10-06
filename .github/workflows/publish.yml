@@ -1,0 +1,35 @@
+name: Build and publish image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: felinelogic
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: felinelogic/excalidash-mcp:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/ukashazia/excalidash-mcp
+            org.opencontainers.image.revision=${{ github.sha }}
+      - name: Record published image
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          echo "Image: felinelogic/excalidash-mcp@${IMAGE_DIGEST}" >> "$GITHUB_STEP_SUMMARY"

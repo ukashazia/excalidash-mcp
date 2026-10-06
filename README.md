@@ -1,3 +1,39 @@
+# Stable ExcaliDash compatibility fork
+
+This fork adapts the upstream MCP server to the stable ExcaliDash 0.6.5
+REST API. The upstream Agent API endpoints are absent from that release.
+The container build overlays `compat/index.js` onto the compiled tool
+registration module while retaining upstream HTTP transport and sessions.
+
+Supported tools: `list_drawings`, `select_drawing`, `get_selected_drawing`,
+`create_drawing`, `get_drawing`, `get_drawing_summary`,
+`inspect_drawing_element`, and `update_drawing`.
+
+`update_drawing` replaces complete elements with an explicit drawing version;
+stale updates fail with 409. Omitted appState/files are preserved. The upstream
+`apply_drawing_ops` tool is not exposed by this compatibility image. The stable
+API needs Read drawings and Write drawings scopes, but no AI feature toggle.
+
+Build and test the compatibility image:
+
+```sh
+docker build -t felinelogic/excalidash-mcp:<tag> .
+```
+
+The build runs upstream tests followed by the compatibility integration test.
+Pushes to `main` and manual Actions runs publish a public Docker Hub image as
+`felinelogic/excalidash-mcp:sha-<full-commit-sha>`. Publishing uses the repository
+secret `DOCKERHUB_TOKEN`; its value is not committed. The workflow summary
+records the digest for the Kubernetes deployment.
+The deployment manifests and authenticated nginx gateway remain in
+`ukashazia/cluster/apps/excalidraw`. This repository contains no deployment
+credentials. The HTTP endpoint requires an authenticated gateway for public use.
+
+The documentation below describes the original upstream adapter; its Agent API
+tools and AI feature requirements do not apply to the compatibility image.
+
+---
+
 # ExcaliDash MCP
 
 셀프호스팅한 [ExcaliDash](https://github.com/ZimengXiong/ExcaliDash)의 드로잉을 MCP 클라이언트에서 조회하고 편집하는 서버입니다. ExcaliDash v0.6 계열의 Drawing Agent API를 얇게 감싸며 stdio와 Streamable HTTP를 지원합니다.
