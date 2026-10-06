@@ -6,7 +6,7 @@ COPY src ./src
 RUN npm test
 COPY compat/index.js ./dist/index.js
 COPY compat/compat.test.js ./dist/compat.test.js
-RUN node --test dist/compat.test.js && rm dist/compat.test.js
+RUN node --test dist/compat.test.js dist/httpAuth.test.js && rm dist/compat.test.js
 
 FROM node:22-alpine AS runtime
 ENV NODE_ENV=production \

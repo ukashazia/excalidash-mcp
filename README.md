@@ -29,6 +29,28 @@ The deployment manifests and authenticated nginx gateway remain in
 `ukashazia/cluster/apps/excalidraw`. This repository contains no deployment
 credentials. The HTTP endpoint requires an authenticated gateway for public use.
 
+## Per-client API key authentication
+
+Set `MCP_AUTH_MODE=excalidash` for public HTTP deployments. Only
+`EXCALIDASH_URL` is required; do not configure a shared `EXCALIDASH_API_KEY`.
+Clients send their own `Authorization: Bearer exd_...` header on every request.
+The server validates each key with ExcaliDash and creates a separate API client
+for each MCP session. Sessions cannot be reused with another key. Revocation
+is checked on each request, and ExcaliDash enforces the caller's account access
+and read/write scopes for each tool.
+
+ExcaliDash 0.6.5 has no API-key introspection route. The server probes its
+read-only drawing-list route: a successful response or its exact authenticated
+scope-denial response confirms an account key. Invalid/revoked keys return 401;
+unavailable authentication fails closed with 503. Legacy drawing-scoped keys
+are unsupported by that ExcaliDash release. The key probe has a five-second
+timeout and no validation cache.
+
+The nginx gateway must preserve Authorization while forwarding to the
+loopback adapter. It validates browser Origin and supplies localhost Host.
+Without `MCP_AUTH_MODE=excalidash`, upstream private HTTP/stdio operation
+retains its configured-key behavior; that mode must not be publicly exposed.
+
 The documentation below describes the original upstream adapter; its Agent API
 tools and AI feature requirements do not apply to the compatibility image.
 

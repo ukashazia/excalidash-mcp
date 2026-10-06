@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   createServer as createNodeServer,
   type IncomingMessage,
@@ -117,12 +117,17 @@ const readJsonBody = async (
 type SessionEntry = {
   transport: NodeStreamableHTTPServerTransport;
   lastSeen: number;
+  credentialHash?: string;
 };
 
 export const startHttpServer = async (
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<Server> => {
-  const excalidashConfig = configFromEnv(env);
+  const callerAuth = env.MCP_AUTH_MODE === "excalidash";
+  const excalidashConfig = callerAuth
+    ? { url: env.EXCALIDASH_URL?.trim() || "", token: "", drawingId: undefined }
+    : configFromEnv(env);
+  if (!excalidashConfig.url) throw new Error("EXCALIDASH_URL is required");
   const httpConfig = httpConfigFromEnv(env);
   const client = new ExcaliDashClient(excalidashConfig);
   const sessions = new Map<string, SessionEntry>();
@@ -179,6 +184,7 @@ export const startHttpServer = async (
     req: IncomingMessage,
     res: ServerResponse,
     body: unknown,
+    token?: string,
   ): Promise<void> => {
     sweepIdleSessions();
     if (sessions.size >= httpConfig.maxSessions) {
@@ -189,20 +195,67 @@ export const startHttpServer = async (
     const transport = new NodeStreamableHTTPServerTransport({
       sessionIdGenerator: randomUUID,
       onsessioninitialized: (id): void => {
-        sessions.set(id, { transport, lastSeen: Date.now() });
+        sessions.set(id, { transport, lastSeen: Date.now(), credentialHash: token ? createHash("sha256").update(token).digest("hex") : undefined });
       },
     });
     transport.onclose = () => {
       if (transport.sessionId) sessions.delete(transport.sessionId);
     };
-    await createMcpServer(client, excalidashConfig.drawingId).connect(transport);
+    const sessionClient = token
+      ? new ExcaliDashClient({ url: excalidashConfig.url, token })
+      : client;
+    await createMcpServer(sessionClient, excalidashConfig.drawingId).connect(transport);
     await transport.handleRequest(req, res, body);
+  };
+
+  const authenticate = async (req: IncomingMessage, res: ServerResponse): Promise<string | null> => {
+    const match = /^Bearer (exd_[A-Za-z0-9_-]+)$/i.exec(req.headers.authorization || "");
+    if (!match) {
+      res.setHeader("WWW-Authenticate", 'Bearer realm="ExcaliDash MCP"');
+      jsonRpcError(res, 401, -32000, "An ExcaliDash account API key is required");
+      return null;
+    }
+    const token = match[1]!;
+    const base = excalidashConfig.url.replace(/\/+$/, "");
+    const api = base.endsWith("/api") ? base : `${base}/api`;
+    try {
+      // ExcaliDash 0.6.5 has no key introspection endpoint. Its drawing route
+      // validates the key before scope authorization. A precise scope-denial
+      // response therefore also confirms a valid account key (e.g. write-only).
+      const response = await fetch(`${api}/drawings?limit=1&offset=0`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+        signal: AbortSignal.timeout(5000),
+        redirect: "error",
+      });
+      if (response.ok) {
+        await response.body?.cancel();
+        return token;
+      }
+      if (response.status === 403) {
+        const detail = await response.json().catch(() => null) as { error?: string; message?: string } | null;
+        if (detail?.error === "Forbidden" && detail.message === "API key is not authorized for this route") return token;
+        jsonRpcError(res, 403, -32000, "This API key is not supported by ExcaliDash");
+        return null;
+      }
+      await response.body?.cancel();
+      if (response.status === 401) {
+        res.setHeader("WWW-Authenticate", 'Bearer realm="ExcaliDash MCP", error="invalid_token"');
+        jsonRpcError(res, 401, -32000, "Invalid or revoked ExcaliDash API key");
+      } else {
+        jsonRpcError(res, 503, -32000, "ExcaliDash authentication is unavailable");
+      }
+    } catch {
+      jsonRpcError(res, 503, -32000, "ExcaliDash authentication is unavailable");
+    }
+    return null;
   };
 
   const routeMcp = async (
     req: IncomingMessage,
     res: ServerResponse,
   ): Promise<void> => {
+    const token = callerAuth ? await authenticate(req, res) : undefined;
+    if (callerAuth && !token) return;
     const parsed = await parseBody(req, res);
     if (!parsed.ok) return;
     const { body } = parsed;
@@ -210,13 +263,17 @@ export const startHttpServer = async (
     const sessionId = readSessionId(req);
     const existing = sessionId ? sessions.get(sessionId) : undefined;
     if (existing) {
+      if (callerAuth && existing.credentialHash !== createHash("sha256").update(token!).digest("hex")) {
+        jsonRpcError(res, 403, -32000, "MCP session belongs to a different API key");
+        return;
+      }
       existing.lastSeen = Date.now();
       await existing.transport.handleRequest(req, res, body);
       return;
     }
 
     if (!sessionId && req.method === "POST" && isInitializeRequest(body)) {
-      await openSession(req, res, body);
+      await openSession(req, res, body, token || undefined);
       return;
     }
 
