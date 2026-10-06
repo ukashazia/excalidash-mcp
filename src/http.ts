@@ -13,7 +13,7 @@ import {
   localhostOriginValidation,
   NodeStreamableHTTPServerTransport,
 } from "@modelcontextprotocol/node";
-import { configFromEnv, ExcaliDashClient } from "./excalidash.js";
+import { configFromEnv, ExcaliDashClient, type ExcaliDashConfig } from "./excalidash.js";
 import { createServer as createMcpServer } from "./index.js";
 
 const DEFAULT_PORT = 8080;
@@ -124,8 +124,8 @@ export const startHttpServer = async (
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<Server> => {
   const callerAuth = env.MCP_AUTH_MODE === "excalidash";
-  const excalidashConfig = callerAuth
-    ? { url: env.EXCALIDASH_URL?.trim() || "", token: "", drawingId: undefined }
+  const excalidashConfig: ExcaliDashConfig = callerAuth
+    ? { url: env.EXCALIDASH_URL?.trim() || "", token: "", drawingId: undefined, ...(env.EXCALIDASH_PROXY_PROTO === "https" ? { proxyProto: "https" as const } : {}) }
     : configFromEnv(env);
   if (!excalidashConfig.url) throw new Error("EXCALIDASH_URL is required");
   const httpConfig = httpConfigFromEnv(env);
@@ -202,7 +202,7 @@ export const startHttpServer = async (
       if (transport.sessionId) sessions.delete(transport.sessionId);
     };
     const sessionClient = token
-      ? new ExcaliDashClient({ url: excalidashConfig.url, token })
+      ? new ExcaliDashClient({ url: excalidashConfig.url, token, ...(excalidashConfig.proxyProto ? { proxyProto: excalidashConfig.proxyProto } : {}) })
       : client;
     await createMcpServer(sessionClient, excalidashConfig.drawingId).connect(transport);
     await transport.handleRequest(req, res, body);
@@ -223,7 +223,7 @@ export const startHttpServer = async (
       // validates the key before scope authorization. A precise scope-denial
       // response therefore also confirms a valid account key (e.g. write-only).
       const response = await fetch(`${api}/drawings?limit=1&offset=0`, {
-        headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/json", ...(excalidashConfig.proxyProto ? { "X-Forwarded-Proto": excalidashConfig.proxyProto } : {}) },
         signal: AbortSignal.timeout(5000),
         redirect: "error",
       });

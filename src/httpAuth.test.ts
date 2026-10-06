@@ -7,6 +7,7 @@ test("caller API keys authenticate, isolate sessions and accounts, preserve scop
   const revoked = new Set<string>();
   let unavailable = false;
   const api = createServer((req, res) => {
+    assert.equal(req.headers["x-forwarded-proto"], "https");
     const token = req.headers.authorization?.replace("Bearer ", "");
     res.setHeader("Content-Type", "application/json");
     if (unavailable) { res.writeHead(502).end('{}'); return; }
@@ -26,7 +27,7 @@ test("caller API keys authenticate, isolate sessions and accounts, preserve scop
   });
   await new Promise<void>((resolve) => api.listen(0, "127.0.0.1", resolve));
   const address = api.address(); assert.ok(address && typeof address === "object");
-  const http = await startHttpServer({ EXCALIDASH_URL: `http://127.0.0.1:${address.port}`, MCP_AUTH_MODE: "excalidash", MCP_HTTP_HOST: "127.0.0.1", MCP_HTTP_PORT: "0" });
+  const http = await startHttpServer({ EXCALIDASH_URL: `http://127.0.0.1:${address.port}`, MCP_AUTH_MODE: "excalidash", EXCALIDASH_PROXY_PROTO: "https", MCP_HTTP_HOST: "127.0.0.1", MCP_HTTP_PORT: "0" });
   const listener = http.address(); assert.ok(listener && typeof listener === "object");
   const endpoint = `http://127.0.0.1:${listener.port}/mcp`;
   let counter = 0;

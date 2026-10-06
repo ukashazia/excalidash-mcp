@@ -46,6 +46,11 @@ unavailable authentication fails closed with 503. Legacy drawing-scoped keys
 are unsupported by that ExcaliDash release. The key probe has a five-second
 timeout and no validation cache.
 
+When connecting to the in-cluster frontend via HTTP, set
+`EXCALIDASH_PROXY_PROTO=https` to preserve the externally terminated TLS
+context and avoid backend HTTPS redirects. Use this only behind trusted internal
+proxies.
+
 The nginx gateway must preserve Authorization while forwarding to the
 loopback adapter. It validates browser Origin and supplies localhost Host.
 Without `MCP_AUTH_MODE=excalidash`, upstream private HTTP/stdio operation

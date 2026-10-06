@@ -2,6 +2,7 @@ export type ExcaliDashConfig = {
   url: string;
   token: string;
   drawingId?: string;
+  proxyProto?: "https";
 };
 
 export type DrawingSummary = {
@@ -54,7 +55,7 @@ export const configFromEnv = (
     );
   }
 
-  return { url, token, drawingId };
+  return { url, token, drawingId, ...(env.EXCALIDASH_PROXY_PROTO === "https" ? { proxyProto: "https" as const } : {}) };
 };
 
 export class ExcaliDashClient {
@@ -132,6 +133,7 @@ export class ExcaliDashClient {
       method: options.method ?? "GET",
       headers: {
         Authorization: `Bearer ${this.config.token}`,
+        ...(this.config.proxyProto ? { "X-Forwarded-Proto": this.config.proxyProto } : {}),
         Accept:
           options.responseType === "text" ? "text/plain" : "application/json",
         ...(options.body ? { "Content-Type": "application/json" } : {}),
