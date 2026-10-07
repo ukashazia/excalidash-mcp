@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { startHttpServer } from './http.js';
+import { sharedRenderer } from './renderer.js';
+import { PNG } from 'pngjs';
 
 const listen = (server) => new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const close = (server) => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); };
@@ -9,7 +11,7 @@ const close = (server) => { server.closeAllConnections(); return new Promise((re
 test('stable API compatibility: scene reads, inspection, versioned writes, and session isolation', async () => {
   let drawing = { id: 'drawing-1', name: 'Test', version: 3, elements: [
     { id: 'box', type: 'rectangle', x: 0, y: 0, width: 100, height: 80, boundElements: [{ id: 'label', type: 'text' }] },
-    { id: 'label', type: 'text', text: 'Hello', containerId: 'box' },
+    { id: 'label', type: 'text', text: 'Hello', containerId: 'box', x: 10, y: 20, width: 80, height: 30, fontSize: 20, fontFamily: 1, autoResize: true },
   ], appState: { viewBackgroundColor: '#fff' }, files: { preserved: {} } };
   const api = createServer(async (req, res) => {
     assert.equal(req.headers.authorization, 'Bearer test-key');
@@ -46,7 +48,7 @@ test('stable API compatibility: scene reads, inspection, versioned writes, and s
   try {
     const { session } = await init();
     const tools = (await send(session, 'tools/list', {})).result.tools.map((t) => t.name);
-    assert.equal(tools.length, 8); assert.ok(tools.includes('update_drawing')); assert.ok(!tools.includes('apply_drawing_ops'));
+    assert.equal(tools.length, 13); assert.ok(tools.includes('update_drawing')); assert.ok(!tools.includes('apply_drawing_ops'));
     assert.equal(value(await tool(session, 'list_drawings')).drawings.length, 1);
     assert.equal(value(await tool(session, 'select_drawing', { drawingId: 'drawing-1' })).selectedDrawingId, 'drawing-1');
     assert.equal(value(await tool(session, 'get_drawing')).version, 3);
@@ -58,7 +60,15 @@ test('stable API compatibility: scene reads, inspection, versioned writes, and s
     assert.equal(value(await tool(session, 'update_drawing', { version: 3, elements })).version, 4);
     assert.equal((await tool(session, 'update_drawing', { version: 3, elements })).isError, true);
     assert.equal(drawing.version, 4); assert.equal(drawing.appState.viewBackgroundColor, '#fff'); assert.ok(drawing.files.preserved);
+    const viewport = value(await tool(session, 'set_viewport', { fit: 'board', expectedVersion: 4 }));
+    assert.equal(viewport.source, 'saved');
+    assert.equal(value(await tool(other, 'get_viewport')).viewport, null);
+    const shot = await tool(session, 'snapshot_viewport');
+    assert.equal(shot.content[1].type, 'image');
+    const png = PNG.sync.read(Buffer.from(shot.content[1].data, 'base64'));
+    assert.equal(png.width, 1280); assert.equal(png.height, 960);
+    assert.ok(value(shot).visibleElementIds.includes('box'));
     assert.equal(value(await tool(session, 'create_drawing', { name: 'New' })).id, 'new-drawing');
     assert.equal(value(await tool(session, 'get_selected_drawing')).selectedDrawingId, 'new-drawing');
-  } finally { await close(http); await close(api); }
+  } finally { await close(http); await close(api); await sharedRenderer.close(); }
 });

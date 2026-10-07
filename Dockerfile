@@ -1,20 +1,26 @@
-FROM node:22-alpine AS build
-WORKDIR /app
-COPY package.json package-lock.json tsconfig.json ./
-RUN npm ci --no-audit --no-fund
-COPY src ./src
-RUN npm test
-COPY compat/index.js ./dist/index.js
-COPY compat/compat.test.js ./dist/compat.test.js
-RUN node --test dist/compat.test.js dist/httpAuth.test.js && rm dist/compat.test.js
-
-FROM node:22-alpine AS runtime
-ENV NODE_ENV=production \
+FROM node:22-bookworm-slim AS browser
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    NODE_ENV=production \
     MCP_HTTP_HOST=0.0.0.0 \
     MCP_HTTP_PORT=8080
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
+RUN npm ci --omit=dev --no-audit --no-fund \
+    && npx playwright install --with-deps chromium --only-shell \
+    && npm cache clean --force \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM browser AS build
+ENV NODE_ENV=development
+COPY tsconfig.json ./
+RUN npm ci --no-audit --no-fund
+COPY src ./src
+COPY compat ./compat
+COPY renderer ./renderer
+COPY scripts ./scripts
+RUN npm test
+
+FROM browser AS runtime
 COPY --from=build /app/dist ./dist
 USER node
 EXPOSE 8080
