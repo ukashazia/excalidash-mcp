@@ -193,6 +193,9 @@ export const startHttpServer = async (
     }
 
     const transport = new NodeStreamableHTTPServerTransport({
+      // Tools return a single completed result; JSON avoids SSE overhead and
+      // allows gateways to compress drawing and base64 image responses.
+      enableJsonResponse: true,
       sessionIdGenerator: randomUUID,
       onsessioninitialized: (id): void => {
         sessions.set(id, { transport, lastSeen: Date.now(), credentialHash: token ? createHash("sha256").update(token).digest("hex") : undefined });
@@ -228,7 +231,8 @@ export const startHttpServer = async (
         redirect: "error",
       });
       if (response.ok) {
-        await response.body?.cancel();
+        // Drain the small probe response so its connection can be reused.
+        await response.arrayBuffer();
         return token;
       }
       if (response.status === 403) {
@@ -254,7 +258,12 @@ export const startHttpServer = async (
     req: IncomingMessage,
     res: ServerResponse,
   ): Promise<void> => {
+    const authStarted = performance.now();
     const token = callerAuth ? await authenticate(req, res) : undefined;
+    if (!res.headersSent) {
+      res.setHeader("Server-Timing", `auth;dur=${(performance.now() - authStarted).toFixed(1)}`);
+      res.setHeader("Cache-Control", "private, no-store");
+    }
     if (callerAuth && !token) return;
     const parsed = await parseBody(req, res);
     if (!parsed.ok) return;
