@@ -26,25 +26,33 @@
     "dist/http.d.ts"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "npm run build:upstream && npm run build:renderer && node scripts/install-compat.mjs",
     "start": "node dist/index.js",
     "start:http": "node dist/http.js",
-    "test": "npm run build && node --test dist/**/*.test.js"
+    "test": "npm run build:upstream && node --test dist/excalidash.test.js dist/http.test.js dist/httpAuth.test.js dist/mcp.test.js && npm run build && node --test dist/compat.test.js dist/viewport.test.js dist/renderer.test.js dist/httpAuth.test.js",
+    "build:upstream": "tsc -p tsconfig.json",
+    "build:renderer": "vite build --config renderer/vite.config.js"
   },
   "dependencies": {
     "@modelcontextprotocol/node": "^2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
+    "playwright": "1.63.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@excalidraw/excalidraw": "0.18.1",
     "@modelcontextprotocol/client": "^2.0.0",
     "@types/node": "^24.10.1",
-    "typescript": "^5.9.3"
+    "pngjs": "7.0.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "typescript": "^5.9.3",
+    "vite": "8.3.3"
   },
   "overrides": {
     "@hono/node-server": "2.0.10"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.12"
   }
 }

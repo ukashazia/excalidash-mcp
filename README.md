@@ -2,12 +2,12 @@
 
 This fork adapts the upstream MCP server to the stable ExcaliDash 0.6.5
 REST API. The upstream Agent API endpoints are absent from that release.
-The container build overlays `compat/index.js` onto the compiled tool
+The build overlays `compat/index.js` onto the compiled tool
 registration module while retaining upstream HTTP transport and sessions.
 
 Supported tools: `list_drawings`, `select_drawing`, `get_selected_drawing`,
 `create_drawing`, `get_drawing`, `get_drawing_summary`,
-`inspect_drawing_element`, and `update_drawing`.
+`inspect_drawing_element`, `update_drawing`, and the five viewport tools below.
 
 `update_drawing` replaces complete elements with an explicit drawing version;
 stale updates fail with 409. Omitted appState/files are preserved. The upstream
@@ -20,7 +20,10 @@ Build and test the compatibility image:
 docker build -t felinelogic/excalidash-mcp:<tag> .
 ```
 
-The build runs upstream tests followed by the compatibility integration test.
+The build runs upstream tests, compatibility HTTP/authentication tests, viewport tests,
+and real Chromium rendering tests. `npm test` requires Chromium (`npx playwright
+install --with-deps chromium --only-shell`); `npm run build` produces the compatible
+server and bundled renderer. Node 22.12 or newer is required.
 Pushes to `main` and manual Actions runs publish a public Docker Hub image as
 `felinelogic/excalidash-mcp:sha-<full-commit-sha>`. Publishing uses the repository
 secret `DOCKERHUB_TOKEN`; its value is not committed. The workflow summary
@@ -28,6 +31,52 @@ records the digest for the Kubernetes deployment.
 The deployment manifests and authenticated nginx gateway remain in
 `ukashazia/cluster/apps/excalidraw`. This repository contains no deployment
 credentials. The HTTP endpoint requires an authenticated gateway for public use.
+
+## Viewport inspection
+
+Each MCP session has a private rendering viewport. These tools do not change
+saved drawings or move the viewport in a user's browser:
+
+| Tool | Arguments / behavior |
+| --- | --- |
+| `set_viewport` | Optional `drawingId`; `fit: "board"` (default), `fit: "elements"` plus `elementIds`, or all of `centerX`, `centerY`, `zoom`. Optional `padding` and `expectedVersion`. |
+| `get_viewport` | Return source, version, camera, and canvas bounds. |
+| `pan_viewport` | `dx`, `dy` in canvas units; positive values move right/down. |
+| `zoom_viewport` | `factor`; values above 1 zoom in around the center, below 1 zoom out. |
+| `snapshot_viewport` | Return a native MCP PNG image plus JSON metadata for exactly the current viewport. |
+
+Images are always 1280×960 pixels. Zoom 1 means one pixel per canvas unit.
+Fit a board for orientation, then fit element IDs or pan/zoom for readable detail.
+Bound labels are included when focusing their container. Snapshots include the
+board version, exact canvas bounds, visible element IDs, and rendering time.
+A saved-board snapshot rechecks account access and refuses to render if the
+board version changed since `set_viewport`; refresh the viewport first.
+
+`set_viewport` also accepts `draft: { elements, appState?, files? }` to inspect
+an unsaved proposed scene. It reads the selected drawing as a base for omitted
+settings/files; it never writes. Draft metadata includes the base version and
+an SHA-256 content hash. Drafts remain unchanged until another `set_viewport`.
+Saving remains an explicit `update_drawing` call with the drawing version.
+
+The renderer uses pinned Excalidraw 0.18.1 export utilities and bundled fonts.
+One lazily launched Chromium process and rendering page are reused, with a
+serialized queue of at most eight requests. The most recent scene's SVG is
+reused for pan/zoom snapshots. SVG viewport clipping produces only the fixed
+image; no enormous whole-board bitmap is allocated. It still constructs a
+whole-scene SVG on scene changes, so large/dense scenes cost more initially.
+The browser can restart after failure; a render has a 20-second timeout.
+
+Drawing data is bounded to 5,000 elements / 8 MiB and PNG responses to 5 MiB.
+Image elements currently require embedded base64 image data in `files`; missing
+or remote image data fails clearly instead of returning an incomplete preview.
+The renderer cannot make external network requests and receives no API keys.
+Browser credentials, selection, and unsaved edits are not part of these previews.
+No grid index, automatic layout, or semantic editing tools are added.
+
+Chromium needs writable `/tmp`, and the adapter now needs more memory than the
+previous API-only image. The Dockerfile bundles Chromium and OS dependencies;
+Kubernetes resources and the `/tmp` mount are configured in the cluster repo.
+For local installations, `MCP_CHROMIUM_EXECUTABLE` can select an existing browser.
 
 ## Per-client API key authentication
 

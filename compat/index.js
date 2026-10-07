@@ -1,11 +1,12 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import * as z from 'zod/v4';
+import { registerViewportTools } from './viewport.js';
 import { configFromEnv, ExcaliDashClient } from './excalidash.js';
 
 // Compatibility with the stable ExcaliDash 0.6.5 drawing CRUD API.
 // Keep upstream HTTP transport/session handling; do not advertise absent Agent API routes.
-export const createServer = (client, initialDrawingId) => {
+export const createServer = (client, initialDrawingId, options) => {
   const server = new McpServer({ name: 'excalidash-mcp', version: '0.3.1-compat.1' });
   let selectedDrawingId = initialDrawingId;
   const id = z.string().min(1);
@@ -56,6 +57,7 @@ export const createServer = (client, initialDrawingId) => {
     elements: z.array(z.record(z.string(), z.unknown())).max(5000),
     appState: z.record(z.string(), z.unknown()).optional(), files: z.record(z.string(), z.unknown()).optional(),
   }), async ({ drawingId, ...payload }) => client.request(`drawings/${encodeURIComponent(resolve(drawingId))}`, { method: 'PUT', body: JSON.stringify(payload) }));
+  registerViewportTools(server, client, resolve, options);
   return server;
 };
 
