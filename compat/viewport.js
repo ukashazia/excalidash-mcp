@@ -251,6 +251,7 @@ export function registerViewportTools(
     "Return a 1280×960 PNG image of exactly this session’s viewport, plus bounds and drawing version. Saved-board snapshots fail if the board changed since set_viewport. Draft snapshots never save. Pan or zoom for readable detail.",
     z.object({}),
     async () => {
+      const started = performance.now();
       const s = required();
       let scene = s.draft;
       if (!scene) {
@@ -265,6 +266,8 @@ export function registerViewportTools(
           files: drawing.files || {},
         });
       }
+      const drawingReadMs = Math.round(performance.now() - started);
+      const renderStarted = performance.now();
       const { png, geometry, renderMs } = await renderer.snapshot(
         scene,
         s.viewport,
@@ -287,6 +290,11 @@ export function registerViewportTools(
               ...metadata(),
               visibleElementIds: visible,
               renderMs,
+              timings: {
+                drawingReadMs,
+                rendererMs: Math.round(performance.now() - renderStarted),
+                totalMs: Math.round(performance.now() - started),
+              },
               rendererVersion: "excalidraw-0.18.1",
               note: "Viewport preview from scene data; does not show unsaved edits in a user browser.",
             }),

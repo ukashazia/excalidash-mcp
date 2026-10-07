@@ -67,7 +67,11 @@ test('stable API compatibility: scene reads, inspection, versioned writes, and s
     assert.equal(shot.content[1].type, 'image');
     const png = PNG.sync.read(Buffer.from(shot.content[1].data, 'base64'));
     assert.equal(png.width, 1280); assert.equal(png.height, 960);
-    assert.ok(value(shot).visibleElementIds.includes('box'));
+    const meta = value(shot);
+    assert.ok(meta.visibleElementIds.includes('box'));
+    assert.ok(meta.timings.drawingReadMs >= 0);
+    assert.ok(meta.timings.rendererMs >= meta.renderMs);
+    assert.ok(meta.timings.totalMs >= meta.timings.rendererMs);
     assert.equal(value(await tool(session, 'create_drawing', { name: 'New' })).id, 'new-drawing');
     assert.equal(value(await tool(session, 'get_selected_drawing')).selectedDrawingId, 'new-drawing');
   } finally { await close(http); await close(api); await sharedRenderer.close(); }

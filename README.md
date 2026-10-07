@@ -49,6 +49,14 @@ Images are always 1280×960 pixels. Zoom 1 means one pixel per canvas unit.
 Fit a board for orientation, then fit element IDs or pan/zoom for readable detail.
 Bound labels are included when focusing their container. Snapshots include the
 board version, exact canvas bounds, visible element IDs, and rendering time.
+`timings` separates the drawing read, renderer (including queue/startup), and
+total tool time. HTTP responses also include `Server-Timing: auth;dur=...`.
+These measurements exclude response transfer to the client.
+
+HTTP POST requests return standard MCP JSON responses rather than SSE streams,
+allowing the nginx gateway to gzip JSON/base64 image payloads. Results remain
+native MCP PNG images at full resolution. Responses are private and not cached;
+key validity and saved-board versions are still checked on every request.
 A saved-board snapshot rechecks account access and refuses to render if the
 board version changed since `set_viewport`; refresh the viewport first.
 

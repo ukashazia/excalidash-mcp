@@ -35,6 +35,11 @@ test("caller API keys authenticate, isolate sessions and accounts, preserve scop
     const r = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(session ? { "mcp-session-id": session } : {}) }, body: JSON.stringify({ jsonrpc: "2.0", id: ++counter, method, params }) });
     const text = await r.text();
     const body = JSON.parse(text.startsWith("event:") ? text.split("\n").find((line) => line.startsWith("data: "))!.slice(6) : text);
+    assert.equal(r.headers.get("content-type"), "application/json");
+    if (r.ok) {
+      assert.match(r.headers.get("server-timing") || "", /^auth;dur=[0-9.]+$/);
+      assert.equal(r.headers.get("cache-control"), "private, no-store");
+    }
     return { status: r.status, session: r.headers.get("mcp-session-id")!, body, challenge: r.headers.get("www-authenticate") };
   };
   const init = (token: string | null) => send(token, "initialize", { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "test", version: "1" } });
