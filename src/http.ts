@@ -13,8 +13,15 @@ import {
   localhostOriginValidation,
   NodeStreamableHTTPServerTransport,
 } from "@modelcontextprotocol/node";
-import { configFromEnv, ExcaliDashClient, type ExcaliDashConfig } from "./excalidash.js";
+import {
+  configFromEnv,
+  ExcaliDashClient,
+  type ExcaliDashConfig,
+} from "./excalidash.js";
 import { createServer as createMcpServer } from "./index.js";
+import { OAuthService, type OAuthIdentity } from "./oauth/service.js";
+import type { OAuthStore } from "./oauth/store.js";
+import { toolScope } from "./oauth/model.js";
 
 const DEFAULT_PORT = 8080;
 const DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024;
@@ -93,7 +100,9 @@ const jsonRpcError = (
 ): void => {
   if (res.headersSent || res.writableEnded) return;
   res.writeHead(status, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ jsonrpc: "2.0", error: { code, message }, id: null }));
+  res.end(
+    JSON.stringify({ jsonrpc: "2.0", error: { code, message }, id: null }),
+  );
 };
 
 const readJsonBody = async (
@@ -122,14 +131,27 @@ type SessionEntry = {
 
 export const startHttpServer = async (
   env: NodeJS.ProcessEnv = process.env,
+  options: { oauthStore?: OAuthStore } = {},
 ): Promise<Server> => {
-  const callerAuth = env.MCP_AUTH_MODE === "excalidash";
+  const callerAuth = ["excalidash", "oauth"].includes(env.MCP_AUTH_MODE || "");
   const excalidashConfig: ExcaliDashConfig = callerAuth
-    ? { url: env.EXCALIDASH_URL?.trim() || "", token: "", drawingId: undefined, ...(env.EXCALIDASH_PROXY_PROTO === "https" ? { proxyProto: "https" as const } : {}) }
+    ? {
+        url: env.EXCALIDASH_URL?.trim() || "",
+        token: "",
+        drawingId: undefined,
+        ...(env.EXCALIDASH_PROXY_PROTO === "https"
+          ? { proxyProto: "https" as const }
+          : {}),
+      }
     : configFromEnv(env);
   if (!excalidashConfig.url) throw new Error("EXCALIDASH_URL is required");
   const httpConfig = httpConfigFromEnv(env);
   const client = new ExcaliDashClient(excalidashConfig);
+  const oauth =
+    env.MCP_AUTH_MODE === "oauth"
+      ? new OAuthService(env, options.oauthStore)
+      : undefined;
+  await oauth?.initialize();
   const sessions = new Map<string, SessionEntry>();
   const validateHost = localhostHostValidation();
   const validateOrigin = localhostOriginValidation();
@@ -164,7 +186,10 @@ export const startHttpServer = async (
   ): Promise<ParsedBody> => {
     if (req.method !== "POST") return { ok: true, body: undefined };
     try {
-      return { ok: true, body: await readJsonBody(req, httpConfig.maxBodyBytes) };
+      return {
+        ok: true,
+        body: await readJsonBody(req, httpConfig.maxBodyBytes),
+      };
     } catch (error) {
       if (error instanceof RangeError) {
         jsonRpcError(res, 413, -32000, error.message);
@@ -185,6 +210,7 @@ export const startHttpServer = async (
     res: ServerResponse,
     body: unknown,
     token?: string,
+    binding?: string,
   ): Promise<void> => {
     sweepIdleSessions();
     if (sessions.size >= httpConfig.maxSessions) {
@@ -193,26 +219,70 @@ export const startHttpServer = async (
     }
 
     const transport = new NodeStreamableHTTPServerTransport({
+      enableJsonResponse: true,
       sessionIdGenerator: randomUUID,
       onsessioninitialized: (id): void => {
-        sessions.set(id, { transport, lastSeen: Date.now(), credentialHash: token ? createHash("sha256").update(token).digest("hex") : undefined });
+        sessions.set(id, {
+          transport,
+          lastSeen: Date.now(),
+          credentialHash:
+            binding ??
+            (token
+              ? createHash("sha256").update(token).digest("hex")
+              : undefined),
+        });
       },
     });
+    if (oauth) {
+      // SDK v2 preserves _meta but drops custom top-level tool fields. Advertise
+      // both forms on the wire for ChatGPT and older compatible clients.
+      const send = transport.send.bind(transport);
+      transport.send = async (message, opts) => {
+        if ("result" in message && Array.isArray(message.result.tools)) {
+          for (const tool of message.result.tools as Record<string, any>[]) {
+            const schemes = [
+              { type: "oauth2", scopes: [toolScope(tool.name)] },
+            ];
+            tool.securitySchemes = schemes;
+            tool._meta = { ...tool._meta, securitySchemes: schemes };
+          }
+        }
+        return send(message, opts);
+      };
+    }
     transport.onclose = () => {
       if (transport.sessionId) sessions.delete(transport.sessionId);
     };
     const sessionClient = token
-      ? new ExcaliDashClient({ url: excalidashConfig.url, token, ...(excalidashConfig.proxyProto ? { proxyProto: excalidashConfig.proxyProto } : {}) })
+      ? new ExcaliDashClient({
+          url: excalidashConfig.url,
+          token,
+          ...(excalidashConfig.proxyProto
+            ? { proxyProto: excalidashConfig.proxyProto }
+            : {}),
+        })
       : client;
-    await createMcpServer(sessionClient, excalidashConfig.drawingId).connect(transport);
+    await createMcpServer(sessionClient, excalidashConfig.drawingId).connect(
+      transport,
+    );
     await transport.handleRequest(req, res, body);
   };
 
-  const authenticate = async (req: IncomingMessage, res: ServerResponse): Promise<string | null> => {
-    const match = /^Bearer (exd_[A-Za-z0-9_-]+)$/i.exec(req.headers.authorization || "");
+  const authenticate = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<string | null> => {
+    const match = /^Bearer (exd_[A-Za-z0-9_-]+)$/i.exec(
+      req.headers.authorization || "",
+    );
     if (!match) {
       res.setHeader("WWW-Authenticate", 'Bearer realm="ExcaliDash MCP"');
-      jsonRpcError(res, 401, -32000, "An ExcaliDash account API key is required");
+      jsonRpcError(
+        res,
+        401,
+        -32000,
+        "An ExcaliDash account API key is required",
+      );
       return null;
     }
     const token = match[1]!;
@@ -223,7 +293,13 @@ export const startHttpServer = async (
       // validates the key before scope authorization. A precise scope-denial
       // response therefore also confirms a valid account key (e.g. write-only).
       const response = await fetch(`${api}/drawings?limit=1&offset=0`, {
-        headers: { Authorization: `Bearer ${token}`, Accept: "application/json", ...(excalidashConfig.proxyProto ? { "X-Forwarded-Proto": excalidashConfig.proxyProto } : {}) },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json",
+          ...(excalidashConfig.proxyProto
+            ? { "X-Forwarded-Proto": excalidashConfig.proxyProto }
+            : {}),
+        },
         signal: AbortSignal.timeout(5000),
         redirect: "error",
       });
@@ -232,20 +308,45 @@ export const startHttpServer = async (
         return token;
       }
       if (response.status === 403) {
-        const detail = await response.json().catch(() => null) as { error?: string; message?: string } | null;
-        if (detail?.error === "Forbidden" && detail.message === "API key is not authorized for this route") return token;
-        jsonRpcError(res, 403, -32000, "This API key is not supported by ExcaliDash");
+        const detail = (await response.json().catch(() => null)) as {
+          error?: string;
+          message?: string;
+        } | null;
+        if (
+          detail?.error === "Forbidden" &&
+          detail.message === "API key is not authorized for this route"
+        )
+          return token;
+        jsonRpcError(
+          res,
+          403,
+          -32000,
+          "This API key is not supported by ExcaliDash",
+        );
         return null;
       }
       await response.body?.cancel();
       if (response.status === 401) {
-        res.setHeader("WWW-Authenticate", 'Bearer realm="ExcaliDash MCP", error="invalid_token"');
+        res.setHeader(
+          "WWW-Authenticate",
+          'Bearer realm="ExcaliDash MCP", error="invalid_token"',
+        );
         jsonRpcError(res, 401, -32000, "Invalid or revoked ExcaliDash API key");
       } else {
-        jsonRpcError(res, 503, -32000, "ExcaliDash authentication is unavailable");
+        jsonRpcError(
+          res,
+          503,
+          -32000,
+          "ExcaliDash authentication is unavailable",
+        );
       }
     } catch {
-      jsonRpcError(res, 503, -32000, "ExcaliDash authentication is unavailable");
+      jsonRpcError(
+        res,
+        503,
+        -32000,
+        "ExcaliDash authentication is unavailable",
+      );
     }
     return null;
   };
@@ -254,18 +355,96 @@ export const startHttpServer = async (
     req: IncomingMessage,
     res: ServerResponse,
   ): Promise<void> => {
-    const token = callerAuth ? await authenticate(req, res) : undefined;
+    let identity: OAuthIdentity | null = null;
+    let token: string | null | undefined;
+    if (
+      oauth &&
+      !/^Bearer exd_[A-Za-z0-9_-]+$/i.test(req.headers.authorization || "")
+    ) {
+      const match = /^Bearer (\S+)$/i.exec(req.headers.authorization || "");
+      try {
+        identity = match ? await oauth.authenticate(match[1]!) : null;
+      } catch {
+        jsonRpcError(
+          res,
+          503,
+          -32000,
+          "ExcaliDash authorization is unavailable",
+        );
+        return;
+      }
+      if (!identity) {
+        res.setHeader(
+          "WWW-Authenticate",
+          oauth.challenge(match ? "invalid_token" : undefined),
+        );
+        jsonRpcError(res, 401, -32000, "OAuth authorization is required");
+        return;
+      }
+      token = identity.backendKey;
+    } else token = callerAuth ? await authenticate(req, res) : undefined;
     if (callerAuth && !token) return;
+    const binding =
+      identity?.binding ??
+      (token ? createHash("sha256").update(token).digest("hex") : undefined);
     const parsed = await parseBody(req, res);
     if (!parsed.ok) return;
     const { body } = parsed;
+    // Scope enforcement is per invocation. Do not let legacy JSON-RPC batches
+    // bypass that check through an array body.
+    if (oauth && Array.isArray(body)) {
+      jsonRpcError(res, 400, -32600, "Send one MCP request at a time");
+      return;
+    }
 
     const sessionId = readSessionId(req);
     const existing = sessionId ? sessions.get(sessionId) : undefined;
     if (existing) {
-      if (callerAuth && existing.credentialHash !== createHash("sha256").update(token!).digest("hex")) {
-        jsonRpcError(res, 403, -32000, "MCP session belongs to a different API key");
+      if (callerAuth && existing.credentialHash !== binding) {
+        jsonRpcError(
+          res,
+          403,
+          -32000,
+          "MCP session belongs to different credentials",
+        );
         return;
+      }
+      const call = body as
+        | { id?: unknown; method?: string; params?: { name?: string } }
+        | undefined;
+      if (
+        identity &&
+        call?.method === "tools/call" &&
+        typeof call.params?.name === "string"
+      ) {
+        const required = toolScope(call.params.name);
+        if (!identity.scopes.includes(required)) {
+          res.writeHead(200, {
+            "Content-Type": "application/json",
+            "Cache-Control": "private, no-store",
+          });
+          res.end(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: call.id ?? null,
+              result: {
+                isError: true,
+                content: [
+                  {
+                    type: "text",
+                    text: "This connection does not have the required permission.",
+                  },
+                ],
+                _meta: {
+                  "mcp/www_authenticate": [
+                    oauth!.challenge("insufficient_scope", required),
+                  ],
+                },
+              },
+            }),
+          );
+          return;
+        }
       }
       existing.lastSeen = Date.now();
       await existing.transport.handleRequest(req, res, body);
@@ -273,7 +452,7 @@ export const startHttpServer = async (
     }
 
     if (!sessionId && req.method === "POST" && isInitializeRequest(body)) {
-      await openSession(req, res, body, token || undefined);
+      await openSession(req, res, body, token || undefined, binding);
       return;
     }
 
@@ -302,6 +481,17 @@ export const startHttpServer = async (
         res.end(JSON.stringify({ status: "ok" }));
         return;
       }
+      if (
+        oauth &&
+        (pathname.startsWith("/mcp/oauth/") ||
+          pathname.startsWith("/.well-known/oauth-"))
+      ) {
+        if (!validateHost(req, res)) return;
+        void oauth
+          .handle(req, res)
+          .catch(() => jsonRpcError(res, 503, -32000, "OAuth is unavailable"));
+        return;
+      }
       if (pathname !== "/mcp") {
         res.writeHead(404).end();
         return;
@@ -321,6 +511,10 @@ export const startHttpServer = async (
     socket.destroy();
   });
 
+  server.once("close", () => {
+    clearInterval(sweeper);
+    void oauth?.close().catch(() => {});
+  });
   const shutdown = async (): Promise<void> => {
     clearInterval(sweeper);
     await Promise.allSettled(
@@ -346,7 +540,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   startHttpServer()
     .then((server) => {
       const address = server.address();
-      const port = typeof address === "object" && address ? address.port : DEFAULT_PORT;
+      const port =
+        typeof address === "object" && address ? address.port : DEFAULT_PORT;
       console.log(`ExcaliDash MCP listening on http://0.0.0.0:${port}/mcp`);
     })
     .catch((error) => {

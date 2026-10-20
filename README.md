@@ -78,6 +78,80 @@ previous API-only image. The Dockerfile bundles Chromium and OS dependencies;
 Kubernetes resources and the `/tmp` mount are configured in the cluster repo.
 For local installations, `MCP_CHROMIUM_EXECUTABLE` can select an existing browser.
 
+## OAuth account connections (ChatGPT)
+
+Set `MCP_AUTH_MODE=oauth` to enable OAuth alongside existing account API keys.
+The adapter implements the authorization-code flow using
+`@node-oauth/oauth2-server`, PKCE S256, dynamic registration of public clients,
+and opaque, resource-bound access and refresh tokens. No additional identity
+provider is needed: consent reuses the ExcaliDash 0.6.5 browser session.
+
+1. Add the HTTPS `/mcp` URL in ChatGPT and select OAuth/dynamic registration.
+2. Open the authorization page. If necessary, sign into ExcaliDash in the new
+   tab and return; the original page detects the existing login.
+3. Review the account and requested read/write permissions, then allow access.
+4. The adapter creates a dedicated scoped ExcaliDash API key server-side.
+   ChatGPT receives OAuth tokens; no API-key copying is required.
+5. Manage connections at `/mcp/oauth/connections`. This page revokes the OAuth
+   grant and its dedicated ExcaliDash key. Revoking the key in ExcaliDash also
+   stops the OAuth connection on its next request.
+
+Configuration (in addition to `EXCALIDASH_URL` and optional proxy settings):
+
+| Variable | Purpose |
+| --- | --- |
+| `MCP_PUBLIC_URL` | Canonical public HTTPS URL ending in `/mcp`; used for resource/audience validation. HTTP is allowed only on loopback for development. |
+| `MCP_OAUTH_DATABASE_URL` | PostgreSQL connection URL. The adapter creates only its own `mcp_oauth` schema; existing ExcaliDash tables are not modified. |
+| `MCP_OAUTH_ENCRYPTION_KEY` | Stable 32-byte random key, encoded as 64 hex characters. Encrypts dedicated API keys with AES-256-GCM and grant-specific associated data. |
+| `MCP_OAUTH_REDIRECT_URIS` | Optional comma-separated exact callback allowlist for additional clients. Defaults already permit ChatGPT's stable callback and callback-ID URLs. |
+
+Public discovery routes are `/.well-known/oauth-protected-resource/mcp` and
+`/.well-known/oauth-authorization-server/mcp/oauth`; root aliases are also
+provided. The authorization-server issuer is `<origin>/mcp/oauth`. DCR exposes
+`/mcp/oauth/register`; authorize/token/revoke endpoints live under the same
+prefix. Registration supports `token_endpoint_auth_method: none`, with exact
+registered redirect matching. CIMD, confidential clients, and machine-to-machine
+grants are not advertised. `iss` is returned with successful/denied OAuth
+callbacks for issuer identification. Discovery advertises `S256` explicitly.
+
+Token lifetimes: authorization requests 10 minutes, authorization codes 2
+minutes, access tokens 10 minutes, and grants/rotating refresh tokens at most
+30 days from original consent. Reconnect after grant expiry. Refresh cannot
+increase scope. Code consumption and refresh rotation use PostgreSQL transactions
+and row locks; refresh-token replay revokes the entire connection. Tokens and
+codes are stored by SHA-256 hash; only encrypted API keys are retained. Keep
+both the database and encryption key across pod restarts. Changing the encryption
+key requires revoking/reconnecting existing grants.
+
+Each MCP request validates the grant, token resource/expiry, tool permissions,
+and underlying ExcaliDash key. A backend outage fails closed. MCP sessions bind
+to the grant, so token refresh preserves the session without allowing another
+account/connection to reuse it. Tool lists declare OAuth security schemes, and
+insufficient-scope results carry `mcp/www_authenticate`. Raw `exd_...` clients
+retain the previous per-request validation behavior.
+
+The OAuth revocation endpoint immediately invalidates the grant and discards
+its stored backend credential. It cannot delete the upstream key without an
+ExcaliDash browser session; use the authenticated connections page or ExcaliDash
+API Keys to delete that key as well. Expired grants similarly cease working,
+but unused upstream key entries remain visible in ExcaliDash until removed.
+
+Limits: 1,000 registered clients, 1,000 pending authorization requests, 50 active
+grants per account, bounded request bodies, and global per-endpoint rate limits.
+Client-provided names are escaped and never treated as verified identities.
+Consent requires the same browser/account, a CSRF token, and exact Origin.
+The reverse proxy must preserve Origin and cookies on `/mcp/oauth/`; keep the
+existing localhost Host/Origin handling on `/mcp`. Do not log OAuth query
+strings, cookies, credentials, or token request bodies. TLS remains at Traefik.
+
+`npm test` now also needs local PostgreSQL server binaries (`initdb`, `pg_ctl`)
+and Chromium. OAuth tests start isolated temporary PostgreSQL clusters and
+never connect to an application database. The Docker build installs PostgreSQL
+only in the test stage; the final image has no database server. Tests cover the
+protocol, replay/concurrency, account isolation, revocation, restart persistence,
+and a real browser consent/redirect flow with a simulated upstream login/API.
+A real ChatGPT account-linking check still requires deploying the reviewed PRs.
+
 ## Per-client API key authentication
 
 Set `MCP_AUTH_MODE=excalidash` for public HTTP deployments. Only

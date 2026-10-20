@@ -12,6 +12,9 @@ RUN npm ci --omit=dev --no-audit --no-fund \
 
 FROM browser AS build
 ENV NODE_ENV=development
+# Isolated PostgreSQL is used only by build-stage OAuth integration tests.
+RUN apt-get update && apt-get install -y --no-install-recommends postgresql \
+    && rm -rf /var/lib/apt/lists/*
 COPY tsconfig.json ./
 RUN npm ci --no-audit --no-fund
 COPY src ./src
